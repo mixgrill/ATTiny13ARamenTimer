@@ -81,12 +81,22 @@ isr_pcint0:
 	rjmp isr_pcint0
 isr_tim0_ovf:
 	in reg_sreg_evac, SREG
+	cp reg_sub, reg0
+	brne _spk_on
+_spk_off:
+	in reg_isr_gpr0, PORTB
+	ldi reg_isr_gpr1, !(1<<PINB4 | 1<<PINB0)
+	and reg_isr_gpr0, reg_isr_gpr1
+	rjmp _spk_ok
+_spk_on:
 	sub reg_remain, reg_sub
 	brcc _no_toggle_waveform
 	add reg_remain, reg_add
 	in reg_isr_gpr0, PORTB
 	ldi reg_isr_gpr1, 1<<PINB0
 	eor reg_isr_gpr0, reg_isr_gpr1
+	;TODO
+_spk_ok:
 	out PORTB, reg_isr_gpr0
 	nop
 _no_toggle_waveform:
@@ -134,10 +144,13 @@ _isr_return_done:
 	nop
 	reti
 start:
+	;PIN3 が HIGHの時何もせずループさせる。
+	;（Powerdownとかしてプログラミング出来なくなったら嫌だから、リカバリのため）
 	in r16, PINB
 	nop
-	andi r16, 1<<PINB4
+	andi r16, 1<<PINB3
 	brne start
+
 	ldi r16, LOW(task0stack + STACK_SIZE_USER - 1)
 	out SPL, r16
 	nop
@@ -159,7 +172,8 @@ start:
 
 	clr reg_sreg_evac ;SREG退避領域
 	clr r16
-	ori r16,(1<<DDB1) | (1<<DDB0)
+	; PB4=SPEAKERの反転信号 | PB1 LED | PB0=SPEAKERへの信号
+	ori r16,(1<<DDB4) | (1<<DDB1) | (1<<DDB0)
 	out DDRB,r16
 	nop
 	ldi r16,1<<PB1
