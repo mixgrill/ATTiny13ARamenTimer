@@ -36,12 +36,17 @@
 #define reg_usr_gpr4 YL
 #define reg_usr_gpr5 YH
 .def reg_system_flags = r21
+.equ SYSFLG_IN_TASKSWITCH = 0
+.equ SYSFLG_MELODY0 = 1
+.equ SYSFLG_MELODY1 = 2
+.equ SYSFLG_SOUND_RESTART_REQ = 5
+.equ SYSFLG_MSK_MELODY = (1<<SYSFLG_MELODY1) | (1<<SYSFLG_MELODY0)
+.equ MELODY_NONE = (0<<SYSFLG_MELODY1)|(0<<SYSFLG_MELODY0)
+.equ MELODY_FANFARE = (0<<SYSFLG_MELODY1)|(1<<SYSFLG_MELODY0)
 
 .equ TIMER_CLOCK_NO_PRESCALE = 0 << CS02 | 0<< CS01 | 1 << CS00
-.equ STAT_IN_TASKSWITCH = 0
 
 .equ STACK_SIZE_USER = 8
-
 .equ OFFSET_SREG = 0
 .equ OFFSET_STACK = 1 ;PCはSTACKの一番上にいつも入っているので保存しない。
 .equ OFFSET_R11 = 2
@@ -50,6 +55,10 @@
 .equ OFFSET_R19 = 5
 .equ OFFSET_R28 = 6
 .equ OFFSET_R29 = 7
+.equ SIZE_NOTE = 3
+.equ OFFSET_ADDR = 0
+.equ OFFSET_SUBR = 1
+.equ OFFSET_TERM = 2
 
 ; Replace with your application code
 .cseg
@@ -81,7 +90,7 @@ isr_pcint0:
 	rjmp isr_pcint0
 isr_tim0_ovf:
 	in reg_sreg_evac, SREG
-	cp reg_sub, reg0
+	cp reg_sub, reg_0
 	brne _spk_on
 _spk_off:
 	in reg_isr_gpr0, PORTB
@@ -93,9 +102,16 @@ _spk_on:
 	brcc _no_toggle_waveform
 	add reg_remain, reg_add
 	in reg_isr_gpr0, PORTB
-	ldi reg_isr_gpr1, 1<<PINB0
-	eor reg_isr_gpr0, reg_isr_gpr1
-	;TODO
+	;SPEAKER の信号を反転
+	;ldi reg_isr_gpr1, 1<<PINB0
+	;eor reg_isr_gpr0, reg_isr_gpr1
+	;上コードでいいがちょっとだけコード節約
+	eor reg_isr_gpr0, reg_1
+	;SPEAKERの反転信号をいったんONにする
+	sbr reg_isr_gpr0, 1<<PINB4
+	;SPEAKERビットがOFFの時SPEAKERの反転はONのまま、SPEAKERビットがONの時SPEAKERの反転はOFF
+	sbrs reg_isr_gpr0, 0
+	cbr reg_isr_gpr0, 1<<PINB4
 _spk_ok:
 	out PORTB, reg_isr_gpr0
 	nop
@@ -131,12 +147,12 @@ isr_adc:
 	rjmp isr_adc
 isr_return:
 	; タスクスイッチ中に割り込みがかかった場合、タスクスイッチを継続する。
-	andi reg_system_flags, 1<<STAT_IN_TASKSWITCH
+	andi reg_system_flags, 1<<SYSFLG_IN_TASKSWITCH
 	brne _isr_return_done
 	; 10msec の境界ではないなら、処理を継続する。
 	brtc _isr_return_done
 	; 10msec の境界！タスクスイッチを行う。
-	sbr reg_system_flags, STAT_IN_TASKSWITCH	
+	sbr reg_system_flags, 1<<SYSFLG_IN_TASKSWITCH	
 	sei
 	rjmp task_switch
 _isr_return_done:
@@ -279,7 +295,8 @@ _tsw_restore_addr_ok:
 	ld r29, x+
 
 	; タスクスイッチフラグの終了
-	cbr reg_system_flags, STAT_IN_TASKSWITCH
+	cbr reg_system_flags, SYSFLG_IN_TASKSWITCH
+	ori reg_system_flags, MELODY_FANFARE
 	out SREG, reg_sreg_evac
 	nop
 	reti
@@ -290,16 +307,16 @@ led:
 	;r19 はsleep する10msec を保持するのに使う
 	clr r19
 led_loop:
-	; 100 ミリ秒 LED を光らせる
-	ldi r18, 10
+	; 50 ミリ秒 LED を光らせる
+	ldi r18, 5
 	add r19, r18
 	in r18, PORTB
 	sbr r18, 1<<PINB1
 	out PORTB, r18
 	nop
 	rcall n10msec_sleep
-	; 900 ミリ秒 LED を消灯する
-	ldi r18, 90
+	; 950 ミリ秒 LED を消灯する
+	ldi r18, 95
 	add r19, r18
 	in r18, PORTB
 	cbr r18, 1<<PINB1
@@ -311,59 +328,34 @@ led_loop:
 sound:
 	;r11 は 前回の10msec値を保持するのに使う
 	clr r11
-	;r19 はsleep する10msec を保持するのに使う
-	clr r19
+	;メロディを取得
+	ldi r18, SYSFLG_MSK_MELODY
+	and r18, reg_system_flags
+	cpi r18, MELODY_NONE
+	breq sound
+	cpi r18, MELODY_FANFARE
+	breq set_eep_addr_fanfare
+	rjmp sound
+set_eep_addr_fanfare:
+	ldi r18, fanfare
 sound_loop:
-	ldi r19, 215
-	mov reg_add, r19
-	ldi r19,  3
-	mov reg_sub, r19
-	; 100 ミリ秒 LED を光らせる
-	ldi r19, 100
+	rcall eep_read012
+	cp r19, reg_0
+	breq idle
+	mov YH, reg_0
+	ldi YL, LOW(eep_in_buff)
+	;r18は、現在のEEPADRが入っているため一時退避
+	mov r12, r18
+	ld r18, y+
+	mov reg_add, r18
+	ld r18, y+
+	mov reg_sub, r18
+	ld r19, y
 	rcall n10msec_sleep
-	ldi r19, 192
-	mov reg_add, r19
-	ldi r19,  3
-	mov reg_sub, r19
-	ldi r19, 100
-	rcall n10msec_sleep
-	ldi r19, 227
-	mov reg_add, r19
-	ldi r19, 4
-	mov reg_sub, r19
-	ldi r19, 100
-	rcall n10msec_sleep
-	ldi r19, 215
-	mov reg_add, r19
-	ldi r19,  4
-	mov reg_sub, r19
-	ldi r19, 100
-	rcall n10msec_sleep
-	ldi r19, 239
-	mov reg_add, r19
-	ldi r19,  5
-	mov reg_sub, r19
-	ldi r19, 100
-	rcall n10msec_sleep
-	ldi r19, 213
-	mov reg_add, r19
-	ldi r19,  5
-	mov reg_sub, r19
-	ldi r19, 100
-	rcall n10msec_sleep
-	ldi r19, 228
-	mov reg_add, r19
-	ldi r19,  6
-	mov reg_sub, r19
-	ldi r19, 100
-	rcall n10msec_sleep
-	ldi r19, 251
-	mov reg_add, r19
-	ldi r19,  7
-	mov reg_sub, r19
-	ldi r19, 100
-	rcall n10msec_sleep
+	mov r18, r12
 	rjmp sound_loop
+idle:
+	rjmp idle
 /*	clr r16
 	ori r16,1<<PINB1*/
 ;r3:r2 375 (countdown) 374 ~ 0までカウントダウンするため設定する値は374
@@ -397,32 +389,35 @@ fillx:
 _fillx_done:
 	ret
 ;;;;
-;;; 関数名 is_all_zero_x
+;;; 関数名 eep_read012
 ;;; 引数 
-;;;    XH:XL 調査アドレス
-;;;    R16 調査バイト数
+;;;    r18 読み出しEEPROMアドレス
 ;;; 副作用
-;;;    R16 すべて0の時1
-;;; スタック使用
-;;;    1
-is_all_zero_x:
-	push r17
-is_all_zero_x_loop:
-	cp r16, reg_0
-	breq _is_all_zero_x_zero
-	ld  r17, x
-	cp r17, reg_0
-	brne _is_all_zero_x_nonzero
-	rjmp is_all_zero_x_loop
-_is_all_zero_x_zero:
-	ldi r16, 1
-	rjmp _is_all_zero_x_done
-_is_all_zero_x_nonzero:
-	ldi r16, 0
-_is_all_zero_x_done:
-	pop r17
-	ret
+;;;    eep_in_buff ? 0 の内容を読みだした値で書き換える
+;;;    eep_in_buff ? 1 の内容を読みだした値で書き換える
+;;;    eep_in_buff ? 2 の内容を読みだした値で書き換える
+;;;    r18 が 3加算される
+;;;    r19 が最後に読みだした値
+;;;    YH,YL 破壊
+;;; 使用スタック
+;;;    なし
 
+eep_read012:
+	mov YH, reg_0
+	ldi YL, LOW(eep_in_buff)
+	rcall eep_read_common
+	rcall eep_read_common
+	rcall eep_read_common
+	ret
+eep_read_common:
+	sbic EECR, EEWE
+	rjmp eep_read_common
+	out EEARL, r18
+	sbi EECR, EERE
+	in r19, EEDR
+	st y+, r19
+	inc r18
+	ret
 ;;;;
 ;;; 関数名 calc_diff_10msec
 ;;; 引数 
@@ -466,7 +461,8 @@ taskslot0:
 taskslot1:
 	.byte 8
 ;ソフトウェアタイマ
-
+eep_in_buff:
+	.byte SIZE_NOTE
 pre10msec:
 	.byte 1
 task0stack:
@@ -475,21 +471,36 @@ task1stack:
 	.byte STACK_SIZE_USER
 .eseg
 .org 2
-	;40	261.626Hz	ド(C4)
-	; 37500/(261.626*2) = 71.67 この倍数の内256に最も近い値 71.67 * 3 = 215.01=加算値、減算値=3
-	.db 215,3,100 ;加算値 215, 減算値3,再生秒数1秒
-	;42 293.665Hz	レ(D4)
-	; 37500/(293.665*2) = 63.85 この倍数の内256に最も近い値 63.85 * 4 = 255.4=加算値、減算値=4 (少し誤差が大きいかも）
-	.db 255,4,100 ;加算値 215, 減算値3,再生秒数1秒
-	;44	329.628Hz	ミ(E4) = 56.89
-	.db 228,4,100
-	;45	349.228Hz	ファ(F4)
-	.db 215,4,100
-	;47	391.995Hz	ソ(G4)
-	.db 239,5,100
-	;49	440Hz	ラ(A4)
-	.db 213,5,100
-	;51	493.883Hz	シ(B4)
-	.db 228,6,100
-	;52	523.251Hz	ド(C5)
-	.db 251,7,100
+fanfare:
+	;チャルメラ楽譜
+	;ラ(A4,49) 440Hz 加算値213 減算値5 250m秒
+	.db 213,5,25
+	;シ(B4,51) 493.883Hz 加算値228 減算値6 250m秒
+	.db 228,6,25
+	;ド#(C#5,53) 554.365 Hz	1秒
+	.db 203,6,100
+	;シ(B4,51) 493.883Hz 加算値228 減算値6 250m秒
+	.db 228,6,25
+	;ラ(A4,49) 440Hz 加算値213 減算値5 250m秒
+	.db 213,5,25
+	;休符	1秒
+	.db 0,0,100
+	;休符	1秒
+	.db 0,0,100
+	;ラ(A4,49) 440Hz 加算値213 減算値5 250m秒
+	.db 213,5,25
+	;シ(B4,51) 493.883Hz 加算値228 減算値6 250m秒
+	.db 228,6,25
+	;ド#(C#5,53) 554.365 Hz	250秒
+	.db 203,6,25
+	;シ(B4,51) 493.883Hz 加算値228 減算値6 250m秒
+	.db 228,6,25
+	;ラ(A4,49) 440Hz 加算値213 減算値5 250m秒
+	.db 203,6,100
+	;シ(B4,51) 493.883Hz 加算値228 減算値6 1秒
+	;休符	1.27秒
+	.db 0,0,127
+	;休符	1.27秒
+	.db 0,0,127
+	;番兵
+	.db 0,0,0
