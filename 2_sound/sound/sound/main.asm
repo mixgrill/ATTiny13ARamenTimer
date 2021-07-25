@@ -94,7 +94,7 @@ isr_tim0_ovf:
 	brne _spk_on
 _spk_off:
 	in reg_isr_gpr0, PORTB
-	ldi reg_isr_gpr1, !(1<<PINB4 | 1<<PINB0)
+	ldi reg_isr_gpr1, ~(1<<PINB4 | 1<<PINB0)
 	and reg_isr_gpr0, reg_isr_gpr1
 	rjmp _spk_ok
 _spk_on:
@@ -110,7 +110,7 @@ _spk_on:
 	;SPEAKER‚Ì”½“]M†‚ð‚¢‚Á‚½‚ñON‚É‚·‚é
 	sbr reg_isr_gpr0, 1<<PINB4
 	;SPEAKERƒrƒbƒg‚ªOFF‚ÌŽžSPEAKER‚Ì”½“]‚ÍON‚Ì‚Ü‚ÜASPEAKERƒrƒbƒg‚ªON‚ÌŽžSPEAKER‚Ì”½“]‚ÍOFF
-	sbrs reg_isr_gpr0, 0
+	sbrc reg_isr_gpr0, 0
 	cbr reg_isr_gpr0, 1<<PINB4
 _spk_ok:
 	out PORTB, reg_isr_gpr0
@@ -295,7 +295,7 @@ _tsw_restore_addr_ok:
 	ld r29, x+
 
 	; ƒ^ƒXƒNƒXƒCƒbƒ`ƒtƒ‰ƒO‚ÌI—¹
-	cbr reg_system_flags, SYSFLG_IN_TASKSWITCH
+	cbr reg_system_flags, 1<<SYSFLG_IN_TASKSWITCH
 	ori reg_system_flags, MELODY_FANFARE
 	out SREG, reg_sreg_evac
 	nop
@@ -355,7 +355,8 @@ sound_loop:
 	mov r18, r12
 	rjmp sound_loop
 idle:
-	rjmp idle
+
+	rjmp sound
 /*	clr r16
 	ori r16,1<<PINB1*/
 ;r3:r2 375 (countdown) 374 ~ 0‚Ü‚ÅƒJƒEƒ“ƒgƒ_ƒEƒ“‚·‚é‚½‚ßÝ’è‚·‚é’l‚Í374
@@ -474,30 +475,29 @@ task1stack:
 fanfare:
 	;ƒ`ƒƒƒ‹ƒƒ‰Šy•ˆ
 	;ƒ‰(A4,49) 440Hz ‰ÁŽZ’l213 Œ¸ŽZ’l5 250m•b
-	.db 213,5,25
+	.db 213,10,25
 	;ƒV(B4,51) 493.883Hz ‰ÁŽZ’l228 Œ¸ŽZ’l6 250m•b
-	.db 228,6,25
+	.db 228,12,25
 	;ƒh#(C#5,53) 554.365 Hz	1•b
-	.db 203,6,100
+	.db 203,12,100
 	;ƒV(B4,51) 493.883Hz ‰ÁŽZ’l228 Œ¸ŽZ’l6 250m•b
-	.db 228,6,25
+	.db 228,12,25
 	;ƒ‰(A4,49) 440Hz ‰ÁŽZ’l213 Œ¸ŽZ’l5 250m•b
-	.db 213,5,25
-	;‹x•„	1•b
-	.db 0,0,100
+	.db 213,10,25
 	;‹x•„	1•b
 	.db 0,0,100
 	;ƒ‰(A4,49) 440Hz ‰ÁŽZ’l213 Œ¸ŽZ’l5 250m•b
-	.db 213,5,25
+	.db 213,10,25
 	;ƒV(B4,51) 493.883Hz ‰ÁŽZ’l228 Œ¸ŽZ’l6 250m•b
-	.db 228,6,25
+	.db 228,12,25
 	;ƒh#(C#5,53) 554.365 Hz	250•b
-	.db 203,6,25
+	.db 203,12,25
 	;ƒV(B4,51) 493.883Hz ‰ÁŽZ’l228 Œ¸ŽZ’l6 250m•b
-	.db 228,6,25
+	.db 228,12,25
 	;ƒ‰(A4,49) 440Hz ‰ÁŽZ’l213 Œ¸ŽZ’l5 250m•b
-	.db 203,6,100
+	.db 213,10,25
 	;ƒV(B4,51) 493.883Hz ‰ÁŽZ’l228 Œ¸ŽZ’l6 1•b
+	.db 228,12,100
 	;‹x•„	1.27•b
 	.db 0,0,127
 	;‹x•„	1.27•b
