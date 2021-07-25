@@ -147,8 +147,8 @@ isr_adc:
 	rjmp isr_adc
 isr_return:
 	; タスクスイッチ中に割り込みがかかった場合、タスクスイッチを継続する。
-	andi reg_system_flags, 1<<SYSFLG_IN_TASKSWITCH
-	brne _isr_return_done
+	sbrc reg_system_flags, SYSFLG_IN_TASKSWITCH
+	rjmp _isr_return_done
 	; 10msec の境界ではないなら、処理を継続する。
 	brtc _isr_return_done
 	; 10msec の境界！タスクスイッチを行う。
@@ -229,7 +229,7 @@ start:
 	ldi r16, LOW(task1stack + STACK_SIZE_USER - 3)
 	ldi XL, LOW(taskslot1 + OFFSET_STACK)
 	st x+, r16
-
+	ori reg_system_flags, MELODY_FANFARE
 	clr reg_running_task_id
 	ldi r16, LOW(task0stack + STACK_SIZE_USER - 1)
 	out SPL, r16
@@ -296,7 +296,7 @@ _tsw_restore_addr_ok:
 
 	; タスクスイッチフラグの終了
 	cbr reg_system_flags, 1<<SYSFLG_IN_TASKSWITCH
-	ori reg_system_flags, MELODY_FANFARE
+
 	out SREG, reg_sreg_evac
 	nop
 	reti
@@ -327,7 +327,7 @@ led_loop:
 	rjmp led_loop
 sound:
 	;r11 は 前回の10msec値を保持するのに使う
-	clr r11
+	mov r11, reg_10msec
 	;メロディを取得
 	ldi r18, SYSFLG_MSK_MELODY
 	and r18, reg_system_flags
@@ -341,7 +341,7 @@ set_eep_addr_fanfare:
 sound_loop:
 	rcall eep_read012
 	cp r19, reg_0
-	breq idle
+	brlt idle
 	mov YH, reg_0
 	ldi YL, LOW(eep_in_buff)
 	;r18は、現在のEEPADRが入っているため一時退避
@@ -471,7 +471,7 @@ task0stack:
 task1stack:
 	.byte STACK_SIZE_USER
 .eseg
-.org 2
+.org 1
 fanfare:
 	;チャルメラ楽譜
 	;ラ(A4,49) 440Hz 加算値213 減算値5 250m秒
@@ -499,8 +499,8 @@ fanfare:
 	;シ(B4,51) 493.883Hz 加算値228 減算値6 1秒
 	.db 228,12,100
 	;休符	1.27秒
-	.db 0,0,127
+	.db 0,0,100
 	;休符	1.27秒
-	.db 0,0,127
+	.db 0,0,100
 	;番兵
 	.db 0,0,0
