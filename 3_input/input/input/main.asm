@@ -18,7 +18,7 @@
 ; 音階生成用レジスタ
 .def reg_add = r9
 .def reg_sub = r10
-.def reg_remain = r0	
+.def reg_remain = r0
 ; ISRで予約の汎用レジスタ
 .def reg_isr_gpr0 = r20
 .def reg_isr_gpr1 = r22
@@ -35,6 +35,8 @@
 .def reg_usr_gpr3 = r12
 #define reg_usr_gpr4 YL
 #define reg_usr_gpr5 YH
+
+
 .def reg_system_flags = r21
 .equ SYSFLG_IN_TASKSWITCH = 0
 .equ SYSFLG_MELODY0 = 1
@@ -61,7 +63,7 @@
 .equ OFFSET_SUBR = 1
 .equ OFFSET_TERM = 2
 .equ SIZE_TASK_SLOT = 8
-.equ SIZE_MORSE_BUFF = 4
+.equ SIZE_MORSE_BUFF = 2
 ; PIN設定
 ; ボタンPIN ボタンはPowerDownからの復旧する必要性があることからINT0割り当て必須
 .equ DDB_BUTTON = DDB1
@@ -120,17 +122,20 @@ isr_tim0_ovf:
 	cp reg_sub, reg_0
 	brne _spk_on
 _spk_off:
-	in reg_isr_gpr0, PORTB
-	ldi reg_isr_gpr1, ~(1<<PINB_SPK_1 | 1<<PINB_SPK_0)
-	and reg_isr_gpr0, reg_isr_gpr1
+	cbi PORTB, PORTB_SPK_0
+	cbi PORTB, PORTB_SPK_1
 	rjmp _spk_ok
 _spk_on:
 	sub reg_remain, reg_sub
 	brcc _no_toggle_waveform
 	add reg_remain, reg_add
-	in reg_isr_gpr0, PORTB
-	;SPEAKER の信号を反転
-	ldi reg_isr_gpr1, 1<<PINB_SPK_0
+	sbic PORTB, PORTB_SPK0
+	rjmp _spk_on_1
+_spk_on_0:
+	cbi
+	rjmp _spk_ok
+_spk_on_1:
+		
 	eor reg_isr_gpr0, reg_isr_gpr1
 	;SPEAKERの反転信号をいったんONにする
 	ori reg_isr_gpr0, 1<<PINB_SPK_1
@@ -269,7 +274,6 @@ start:
 	ldi XL, LOW(taskslot2 + OFFSET_STACK)
 	st x+, r16
 	clr reg_running_task_id
-
 	ldi r16, LOW(morse)
 	push r16
 	ldi r16, HIGH(morse)
@@ -350,12 +354,60 @@ _tsw_restore:
 	ld r29, x+
 	; タスクスイッチフラグの終了
 	cbr reg_system_flags, 1<<SYSFLG_IN_TASKSWITCH
-
 	out SREG, reg_sreg_evac
 	nop
 	reti
 morse:
-	rjmp morse
+	;現在の 10msec counter をr11に設定
+	mov r11, reg_10msec
+_morse_loop:
+	;モールス出力用バッファの読み込み
+	clr YH
+	ldi YL, LOW(morse_buff)
+	ld r12, y
+	mov r19, r12
+	clr r18
+	cpi r19, 100
+	brcs _morse_keta_100_loop
+	cpi r19, 10
+	brcs _morse_keta_10_loop
+	rjmp _morse_keta_1
+_morse_keta_100_loop:
+	cpi r19, 100
+	brcs _morse_no_more_100
+	inc r18
+	subi r19, 100
+_morse_no_more_100:
+	mov r12, r19 ;r12  に残りを 退避
+	; r18 = 出力数字
+	rcall put_morse
+	; 文字間隔の出力 文字間隔は短音＊３
+	ldi r18, 10 * 3
+	mov r19, r18
+	rcall n10msec_sleep
+	mov r19, r12 ; r12 の残りを復旧
+	clr r18
+_morse_keta_10_loop:
+	cpi r19, 10
+	brcs _morse_no_more_10
+	inc r18
+	subi r19, 10
+_morse_no_more_10:
+	mov r12, r19
+	; r18 = 出力数字
+	rcall put_morse
+	; 文字間隔の出力 文字間隔は短音＊３
+	ldi r18, 10 * 3
+	mov r19, r18
+	rcall n10msec_sleep
+_morse_keta_1:
+	mov r18, r12
+	rcall put_morse
+	; ワード間隔の出力 ワード間隔は短音 * 7
+	ldi r18, 10 * 7
+	mov r19, r18
+	rcall n10msec_sleep
+	rjmp _morse_loop
 main:
 	rjmp main
 ;utilities
@@ -410,10 +462,104 @@ _calc_diff_10msec_sub_ok:
 n10msec_sleep:
 	cp reg_0, r19
 	brge _n10msec_sleep_ok
-	rcall calc_diff_10msec
+	;rcall calc_diff_10msec
+	;スタックが極めて貴重なため
+	;インライン展開
+	mov r18, reg_10msec
+	sub r18, r11
+	brcc _n10msec_sleep_calc_diff_10msec_sub_ok
+	mov r11, reg_0
+	dec r11
+	add r18, r11	
+_n10msec_sleep_calc_diff_10msec_sub_ok:
+	mov r11, reg_10msec
 	sub r19, r18
 	rjmp n10msec_sleep
 _n10msec_sleep_ok:
+	ret
+;;;;
+;;; 関数名 put_morse
+;;; 引数 
+;;;    r18 0～9の数字
+;;; 副作用
+;;;    r19 破壊
+;;;    r18 破壊
+;;;    r11 現在の10msec に書き変わる
+;;;    YH,YL 破壊
+;;;    Tフラグ破壊
+;;; 使用スタック
+;;;    なし
+put_morse:
+	; T bit は、先頭短音の時、クリア、 先頭長音の時セットにして分岐に使用する。
+	clt
+	clr r19
+	; YL = 10
+	ldi YL, 10
+	
+	; r18 == 0 の時 YL = 10 それ以外の時 YL = r18
+	cpse r18, reg_0
+	mov YL, r18
+
+	; YL > 5の時
+	cpi YL, 6
+	brcc _put_morse_skip_above5
+	; YL -= 5
+	subi YL, 5
+	; 長音先頭フラグ
+	set
+	; for (YH = 5; YL < 1; YL--, YH --){
+	;   if (T-bit is set){
+	;		put 長音
+	;   } else {
+	;		put 短音
+	;	}
+	;   if (YL>1) {put 文字間隔}
+	; }
+	;
+_put_morse_skip_above5:
+	ldi YH, 5
+_put_morse_loop1:
+	cp YL, reg_1
+	brcs _put_morse_end_loop1
+	;パルスの出力
+	brts _put_morse_loop1_long
+	push r18
+_put_morse_loop1_short:
+	ldi r18, 10
+	rjmp _put_morse_loop1_term_ok
+_put_morse_loop1_long:
+	ldi r18, 30
+_put_morse_loop1_term_ok:
+	add r19, r18
+	; LED ON SOUND ON
+	; LED 出力ON
+	sbi PINB, PINB_LED
+	; 出力音階
+	ldi r18, 213
+	mov reg_add, r18
+	ldi r18, 5
+	mov reg_sub, r18
+	pop r18
+	rcall n10msec_sleep
+	; LED OFF SOUND OFF
+	; LED が OFF
+	cbi PINB, PINB_LED
+	ldi r18, 213
+	mov reg_add, r18
+	ldi r18, 10
+	mov reg_sub, r18
+	dec YH
+	sub YL, reg_1
+	breq _put_morse_no_inter_pulse
+	;パルス間隔の出力
+	push r18
+	ldi r18, 10
+	add r19, r18
+	pop r18
+	rcall n10msec_sleep
+_put_morse_no_inter_pulse:
+	rjmp _put_morse_loop1
+_put_morse_end_loop1:
 	ret
 .dseg
 taskslot0:
